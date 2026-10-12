@@ -1,0 +1,48 @@
+name: Build and Docker startup
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-start:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Start a clean Docker stack
+        run: |
+          cp .env.example .env
+          docker compose up --build -d
+
+      - name: Verify service health and container build
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:3000/health; then
+              echo
+              docker compose exec -T app npm run build
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs
+          exit 1
+
+      - name: Stop Docker stack
+        if: always()
+        run: docker compose down --volumes

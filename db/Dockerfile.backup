@@ -1,0 +1,5 @@
+FROM postgres:16-alpine
+
+USER root
+RUN mkdir -p /backups && chown postgres:postgres /backups
+USER postgres

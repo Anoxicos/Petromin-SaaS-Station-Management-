@@ -1,0 +1,89 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: station_platform
+      POSTGRES_USER: station_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      STATION_APP_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init/000_create_app_role.sh:/docker-entrypoint-initdb.d/000_create_app_role.sh:ro
+      - ./db/scripts/bootstrap_super_admin.sql:/scripts/bootstrap_super_admin.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U station_admin -d station_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  migrate:
+    image: postgres:16-alpine
+    command: ["/bin/sh", "/scripts/migrate.sh"]
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: station_platform
+      PGUSER: station_admin
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ./db/scripts/migrate.sh:/scripts/migrate.sh:ro
+      - ./db/migrations:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  backup:
+    build:
+      context: .
+      dockerfile: db/Dockerfile.backup
+    command: ["/bin/sh", "/scripts/backup-loop.sh"]
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: station_platform
+      PGUSER: station_admin
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    volumes:
+      - station_backups:/backups
+      - ./db/scripts/backup-loop.sh:/scripts/backup-loop.sh:ro
+      - ./db/scripts/restore-latest.sh:/scripts/restore-latest.sh:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  app:
+    build: .
+    command: ["sh", "-c", "npm ci --no-audit --no-fund && npm run dev"]
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: station_platform
+      PGUSER: station_app
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      AUTH_ISSUER: ${AUTH_ISSUER:-}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:-}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
+      PORT: 3000
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./src:/app/src
+      - ./package.json:/app/package.json:ro
+      - ./package-lock.json:/app/package-lock.json:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - app_node_modules:/app/node_modules
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  station_backups:
+  app_node_modules:
