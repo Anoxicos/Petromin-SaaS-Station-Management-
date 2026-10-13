@@ -1,6 +1,6 @@
 # Station Platform
 
-Foundational code for the multi-client station operations platform. Current work starts at M1: tenant-aware foundations and per-station setup.
+Foundational code for the multi-client station operations platform. M1 foundations are in progress, and M2's catalog, tariffs, and equipment data model has started.
 
 ## Current foundation
 
@@ -12,6 +12,14 @@ Foundational code for the multi-client station operations platform. Current work
 - Client/station setup endpoints with server-side role checks and audit records.
 - Transaction-local tenant context for PostgreSQL row-level security.
 - Database-aware health endpoint.
+- Tenant-scoped membership listing and audited updates, with owner-role protections.
+
+## M2 data model in progress
+
+- Client-owned product catalog and per-station product assignments.
+- Effective-dated station fuel tariffs with database-enforced non-overlapping periods.
+- Station equipment identities and historical nozzle-to-tank assignments, constrained to compatible fuel products.
+- Row-level security on all new catalog and station tables. `db/tests/m2_catalog_security.sql` runs rollback-only checks for tenant/station visibility and tariff/equipment constraints.
 
 ## Provisional technical choices
 
@@ -37,3 +45,9 @@ To restore a snapshot without overwriting the active database, run `docker compo
 - Set production recovery targets and off-site backup policy; local backup and restore have been demonstrated.
 - CI is connected to the GitHub repository; the first remote run passed. Keep the workflow required for future merges.
 - Extend identity and authorization validation to authenticated HTTP flows once an OIDC provider is configured.
+
+## Next M2 work
+
+- Add audited APIs to manage products, station product assignments, fuel tariffs, pumps, meters, nozzles, tanks, and assignment history.
+- Add validated meter readings with nozzle and pump-totalizer modes, period uniqueness, and correction trace.
+- Add staff-entered cash/card totals and daily dip records as the base for daily closing.

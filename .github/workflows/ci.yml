@@ -43,6 +43,9 @@ jobs:
           docker compose logs
           exit 1
 
+      - name: Verify M2 tenant isolation and constraints
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m2_catalog_security.sql
+
       - name: Stop Docker stack
         if: always()
         run: docker compose down --volumes
