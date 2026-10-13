@@ -1,10 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { PoolClient } from "pg";
 import { requireAccess, type Principal } from "../domain/authorization.js";
 import { pool, withPrincipal } from "../infrastructure/db.js";
 import { IdentityError, resolvePrincipal } from "../infrastructure/identity.js";
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const stationRoles = new Set(["OWNER", "MANAGER", "SUPER_ADMIN"]);
+const membershipManagers = new Set(["OWNER", "MANAGER", "SUPER_ADMIN"]);
+const membershipRoleValues = new Set(["OWNER", "MANAGER", "ACCOUNTANT", "CASHIER"]);
 const port = Number(process.env.PORT ?? 3000);
 
 type JsonRecord = Record<string, unknown>;
@@ -63,6 +66,31 @@ function stationSettings(body: JsonRecord): {
     throw new IdentityError(400, "timeZone must be a valid IANA time zone");
   }
   return { meterMode, closingCutoff, timeZone };
+}
+
+function clientRole(value: unknown): "OWNER" | "MANAGER" | "ACCOUNTANT" | "CASHIER" {
+  const role = requiredText(value, "client role", 20).toUpperCase();
+  if (!membershipRoleValues.has(role)) throw new IdentityError(400, "Invalid client role");
+  return role as "OWNER" | "MANAGER" | "ACCOUNTANT" | "CASHIER";
+}
+
+function stationIdList(value: unknown, allowMissing = false): string[] | undefined {
+  if (allowMissing && value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((id) => typeof id === "string" && uuidPattern.test(id))) {
+    throw new IdentityError(400, "stationIds must be an array of station identifiers");
+  }
+  return [...new Set(value as string[])];
+}
+
+async function validateStations(client: PoolClient, clientId: string, stationIds: readonly string[]): Promise<void> {
+  if (stationIds.length === 0) return;
+  const result = await client.query(
+    "SELECT id FROM stations WHERE client_id = $1 AND id = ANY($2::uuid[])",
+    [clientId, stationIds],
+  );
+  if (result.rowCount !== stationIds.length) {
+    throw new IdentityError(400, "Every station assignment must belong to the selected client");
+  }
 }
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -231,26 +259,45 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   const membershipCollection = url.pathname.match(/^\/clients\/([^/]+)\/memberships$/);
-  if (request.method === "POST" && membershipCollection) {
+  if ((request.method === "GET" || request.method === "POST") && membershipCollection) {
     const clientId = membershipCollection[1];
     if (!uuidPattern.test(clientId)) throw new IdentityError(404, "Client not found");
-    requireRole(principal, new Set(["OWNER", "MANAGER", "SUPER_ADMIN"]));
+    requireRole(principal, membershipManagers);
     requireAccess(principal, { clientId });
     if (principal.clientId !== clientId) throw new IdentityError(403, "Select this client before managing memberships");
+
+    if (request.method === "GET") {
+      const rows = await withPrincipal(principal, async (client) => {
+        const result = await client.query(
+          `SELECT u.id AS user_id, u.email, u.display_name, m.role,
+                  COALESCE(array_agg(sm.station_id ORDER BY sm.station_id)
+                    FILTER (WHERE sm.station_id IS NOT NULL), ARRAY[]::uuid[]) AS station_ids
+           FROM client_memberships m
+           JOIN app_users u ON u.id = m.user_id
+           LEFT JOIN station_memberships sm
+             ON sm.client_id = m.client_id AND sm.user_id = m.user_id
+           WHERE m.client_id = $1
+           GROUP BY u.id, u.email, u.display_name, m.role
+           ORDER BY u.display_name, u.email`,
+          [clientId],
+        );
+        return result.rows;
+      });
+      send(response, 200, { memberships: rows });
+      return;
+    }
 
     const body = await readJson(request);
     const userId = requiredText(body.userId, "user identifier", 36);
     if (!uuidPattern.test(userId)) throw new IdentityError(400, "Invalid user identifier");
-    const role = requiredText(body.role, "role", 20).toUpperCase();
-    if (!["OWNER", "MANAGER", "ACCOUNTANT", "CASHIER"].includes(role)) {
-      throw new IdentityError(400, "Invalid client role");
+    const role = clientRole(body.role);
+    if (role === "OWNER" && principal.role === "MANAGER") {
+      throw new IdentityError(403, "Only an owner or super-admin can assign the owner role");
     }
-    const stationIds = body.stationIds ?? [];
-    if (!Array.isArray(stationIds) || !stationIds.every((id) => typeof id === "string" && uuidPattern.test(id))) {
-      throw new IdentityError(400, "stationIds must be an array of station identifiers");
-    }
+    const stationIds = stationIdList(body.stationIds) ?? [];
 
     const created = await withPrincipal(principal, async (client) => {
+      await validateStations(client, clientId, stationIds);
       await client.query(
         "INSERT INTO client_memberships (client_id, user_id, role) VALUES ($1, $2, $3)",
         [clientId, userId, role],
@@ -264,11 +311,97 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       await client.query(
         `INSERT INTO audit_events (client_id, actor_id, action, entity_type, entity_id, details)
          VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
-        [clientId, principal.userId, "MEMBERSHIP_CREATED", "client_membership", userId, JSON.stringify({ role })],
+        [clientId, principal.userId, "MEMBERSHIP_CREATED", "client_membership", userId, JSON.stringify({ role, stationIds })],
       );
-      return { clientId, userId, role, stationIds: [...new Set(stationIds as string[])] };
+      return { clientId, userId, role, stationIds };
     });
     send(response, 201, { membership: created });
+    return;
+  }
+
+  const membershipItem = url.pathname.match(/^\/clients\/([^/]+)\/memberships\/([^/]+)$/);
+  if (request.method === "PATCH" && membershipItem) {
+    const [, clientId, userId] = membershipItem;
+    if (!uuidPattern.test(clientId) || !uuidPattern.test(userId)) {
+      throw new IdentityError(404, "Membership not found");
+    }
+    requireRole(principal, membershipManagers);
+    requireAccess(principal, { clientId });
+    if (principal.clientId !== clientId) {
+      throw new IdentityError(403, "Select this client before managing memberships");
+    }
+
+    const body = await readJson(request);
+    const requestedRole = body.role === undefined ? undefined : clientRole(body.role);
+    const requestedStationIds = stationIdList(body.stationIds, true);
+    if (requestedRole === undefined && requestedStationIds === undefined) {
+      throw new IdentityError(400, "Provide role or stationIds to update");
+    }
+    if (requestedRole === "OWNER" && principal.role === "MANAGER") {
+      throw new IdentityError(403, "Only an owner or super-admin can assign the owner role");
+    }
+
+    const updated = await withPrincipal(principal, async (client) => {
+      const currentResult = await client.query(
+        "SELECT role FROM client_memberships WHERE client_id = $1 AND user_id = $2 FOR UPDATE",
+        [clientId, userId],
+      );
+      const current = currentResult.rows[0] as { role: string } | undefined;
+      if (!current) throw new IdentityError(404, "Membership not found");
+
+      const stationResult = await client.query(
+        `SELECT station_id FROM station_memberships
+         WHERE client_id = $1 AND user_id = $2 ORDER BY station_id`,
+        [clientId, userId],
+      );
+      const beforeStationIds = stationResult.rows.map((row: { station_id: string }) => row.station_id);
+      const nextRole = requestedRole ?? current.role;
+      const nextStationIds = requestedStationIds ?? beforeStationIds;
+      if (requestedStationIds !== undefined) await validateStations(client, clientId, nextStationIds);
+
+      if (current.role === "OWNER" && nextRole !== "OWNER") {
+        const owners = await client.query(
+          "SELECT user_id FROM client_memberships WHERE client_id = $1 AND role = 'OWNER' FOR UPDATE",
+          [clientId],
+        );
+        if (owners.rowCount !== null && owners.rowCount <= 1) {
+          throw new IdentityError(409, "A client must keep at least one owner");
+        }
+      }
+
+      if (nextRole !== current.role) {
+        await client.query(
+          "UPDATE client_memberships SET role = $3 WHERE client_id = $1 AND user_id = $2",
+          [clientId, userId, nextRole],
+        );
+      }
+      if (requestedStationIds !== undefined) {
+        await client.query(
+          `DELETE FROM station_memberships
+           WHERE client_id = $1 AND user_id = $2
+             AND NOT (station_id = ANY($3::uuid[]))`,
+          [clientId, userId, nextStationIds],
+        );
+        await client.query(
+          `INSERT INTO station_memberships (client_id, station_id, user_id)
+           SELECT $1, requested.station_id, $2
+           FROM unnest($3::uuid[]) AS requested(station_id)
+           ON CONFLICT (station_id, user_id) DO NOTHING`,
+          [clientId, userId, nextStationIds],
+        );
+      }
+
+      await client.query(
+        `INSERT INTO audit_events (client_id, actor_id, action, entity_type, entity_id, details)
+         VALUES ($1, $2, 'MEMBERSHIP_UPDATED', 'client_membership', $3, $4::jsonb)`,
+        [clientId, principal.userId, userId, JSON.stringify({
+          before: { role: current.role, stationIds: beforeStationIds },
+          after: { role: nextRole, stationIds: nextStationIds },
+        })],
+      );
+      return { clientId, userId, role: nextRole, stationIds: nextStationIds };
+    });
+    send(response, 200, { membership: updated });
     return;
   }
 

@@ -15,7 +15,7 @@ const roles = new Set<Role>(["OWNER", "MANAGER", "ACCOUNTANT", "CASHIER", "SUPER
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class IdentityError extends Error {
-  constructor(public readonly statusCode: 400 | 401 | 403 | 404 | 503, message: string) {
+  constructor(public readonly statusCode: 400 | 401 | 403 | 404 | 409 | 503, message: string) {
     super(message);
   }
 }
