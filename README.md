@@ -1,6 +1,6 @@
 # Station Platform
 
-Foundational code for the multi-client station operations platform. M1 foundations are in progress, and M2's catalog, tariffs, and equipment data model has started.
+Foundational code for the multi-client station operations platform. M1 foundations are in progress, and M2 catalog, tariffs, and equipment APIs are in place; operational meter and closing flows remain future M2 work.
 
 ## Current foundation
 
@@ -20,6 +20,7 @@ Foundational code for the multi-client station operations platform. M1 foundatio
 - Effective-dated station fuel tariffs with database-enforced non-overlapping periods.
 - Station equipment identities and historical nozzle-to-tank assignments, constrained to compatible fuel products.
 - Row-level security on all new catalog and station tables. `db/tests/m2_catalog_security.sql` runs rollback-only checks for tenant/station visibility and tariff/equipment constraints.
+- Audited APIs for client products, station assignments, effective-dated tariffs, equipment, and nozzle-to-tank assignment history. Managers/owners can write; station access and tenant isolation are enforced server-side and in PostgreSQL.
 
 ## Provisional technical choices
 
@@ -48,6 +49,5 @@ To restore a snapshot without overwriting the active database, run `docker compo
 
 ## Next M2 work
 
-- Add audited APIs to manage products, station product assignments, fuel tariffs, pumps, meters, nozzles, tanks, and assignment history.
 - Add validated meter readings with nozzle and pump-totalizer modes, period uniqueness, and correction trace.
 - Add staff-entered cash/card totals and daily dip records as the base for daily closing.
