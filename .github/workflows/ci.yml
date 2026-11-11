@@ -25,10 +25,47 @@ jobs:
           npm ci
           npm run build
 
+      - name: Verify OIDC login and callback security
+        run: npm run test:auth
+
+      - name: Verify read-only load-test harness behavior
+        run: npm run test:load
+
+      - name: Verify native Excel report workbook generation
+        run: npm run test:xlsx
+
+      - name: Verify CSV and Excel history import parsing
+        run: npm run test:imports
+
+      - name: Verify accessible daily navigation and onboarding guidance
+        run: npm run test:ui
+
       - name: Start a clean Docker stack
         run: |
           cp .env.example .env
           docker compose up --build -d
+
+      - name: Validate production compose and image
+        run: |
+          docker compose --env-file .env.production.example -f compose.production.yaml config --quiet
+          docker build -f Dockerfile.production -t station-platform-production .
+
+      - name: Verify compiled production metrics listener
+        run: |
+          container_id="$(docker run --detach --read-only --tmpfs /tmp \
+            --env PGHOST=127.0.0.1 --env PGPORT=5432 --env PGDATABASE=station_platform \
+            --env PGUSER=station_app --env PGPASSWORD=smoke-test-only \
+            --env METRICS_PORT=9464 station-platform-production)"
+          cleanup() { docker rm --force "$container_id" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          for attempt in $(seq 1 20); do
+            if docker exec "$container_id" node -e 'fetch("http://127.0.0.1:9464/metrics").then(async response => { const body = await response.text(); if (!response.ok || !body.includes("station_platform_process_uptime_seconds")) process.exit(1); }).catch(() => process.exit(1))'; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container_id"
+          exit 1
 
       - name: Verify service health and container build
         run: |
@@ -36,6 +73,11 @@ jobs:
             if curl --fail --silent http://localhost:3000/health; then
               echo
               docker compose exec -T app npm run build
+              docker compose exec -T app node scripts/metrics-endpoint-test.mjs
+              docker compose exec -T prometheus promtool check config /etc/prometheus/prometheus.yml
+              docker compose exec -T prometheus promtool check rules /etc/prometheus/alerts.yml
+              docker compose exec -T prometheus promtool test rules /etc/prometheus/alerts-test.yml
+              docker compose exec -T app node scripts/prometheus-scrape-test.mjs
               exit 0
             fi
             sleep 2
@@ -43,8 +85,68 @@ jobs:
           docker compose logs
           exit 1
 
+      - name: Verify optional RPO/RTO target validation and boundaries
+        run: docker compose exec -T backup sh /scripts/recovery-targets-test.sh
+
+      - name: Verify encrypted off-site backup and isolated restore flow
+        run: |
+          docker compose exec -T -e OFFSITE_RESTIC_REPOSITORY=/backups/ci-offsite -e RESTIC_PASSWORD=ci-test-only -e BACKUP_RUN_ONCE=1 backup sh /scripts/backup-loop.sh
+          docker compose exec -T -e OFFSITE_RESTIC_REPOSITORY=/backups/ci-offsite -e RESTIC_PASSWORD=ci-test-only backup sh -c 'printf unrelated > /tmp/station-platform-ci-unrelated && export RESTIC_REPOSITORY="$OFFSITE_RESTIC_REPOSITORY" && restic backup --tag unrelated /tmp/station-platform-ci-unrelated'
+          docker compose exec -T -e OFFSITE_RESTIC_REPOSITORY=/backups/ci-offsite -e RESTIC_PASSWORD=ci-test-only backup sh /scripts/restore-offsite.sh station_platform_offsite_ci
+          docker compose exec -T db psql -U station_admin -d station_platform_offsite_ci --set=ON_ERROR_STOP=1 --command "SELECT count(*) FROM schema_migrations"
+          docker compose exec -T -e OFFSITE_RESTIC_REPOSITORY=/backups/ci-offsite -e BACKUP_INTERVAL_SECONDS=86400 backup sh /scripts/backup-healthcheck.sh
+          if docker compose exec -T -e OFFSITE_RESTIC_REPOSITORY=/backups/ci-different-target -e BACKUP_INTERVAL_SECONDS=86400 backup sh /scripts/backup-healthcheck.sh; then
+            echo 'Off-site health check accepted a success marker for another repository' >&2
+            exit 1
+          fi
+
+      - name: Verify request correlation and log privacy
+        run: |
+          curl --fail --silent --show-error --dump-header /tmp/station-headers --output /tmp/station-body 'http://localhost:3000/health?probe=ci-log-redaction-check'
+          grep -Eqi '^x-request-id: [0-9a-f-]{36}' /tmp/station-headers
+          docker compose logs --since=30s --no-color app > /tmp/station-app-log
+          grep -F '"event":"http_request"' /tmp/station-app-log
+          grep -F '"route":"health"' /tmp/station-app-log
+          if grep -Fq 'ci-log-redaction-check' /tmp/station-app-log; then
+            echo 'Request query value appeared in app logs' >&2
+            exit 1
+          fi
+
       - name: Verify M2 tenant isolation and constraints
         run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m2_catalog_security.sql
+
+      - name: Verify M2 daily inputs, closing, and reconciliation integrity
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m2_day_inputs_security.sql
+
+      - name: Verify M3 credit, payment, voucher, invoice, and tenant integrity
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m3_credit_sales.sql
+
+      - name: Verify M4 stock, services, purchases, and dip reconciliation
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m4_stock_services.sql
+
+      - name: Verify M10 fuel and cash/card variance tolerances, actor integrity, and tenant isolation
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m10_variance_thresholds.sql
+
+      - name: Verify M5 reports, exports, and record de-duplication
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m5_reports.sql
+
+      - name: Verify M6 staged imports, opening balances, and tenant isolation
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m6_data_import.sql
+
+      - name: Verify M8 subscriptions, contract gating, and tenant scope
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m8_platform_onboarding.sql
+
+      - name: Verify M8 statement snapshots, review controls, and tenant scope
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m8_platform_billing.sql
+
+      - name: Verify M8 onboarding assignments, evidence, and tenant scope
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m8_onboarding_checklist.sql
+
+      - name: Verify M9 support workflow and internal-note isolation
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/m9_support_requests.sql
+
+      - name: Verify user workspace and station discovery
+        run: docker compose exec -T db psql -U station_admin -d station_platform --set=ON_ERROR_STOP=1 --file=- < db/tests/workspace_discovery.sql
 
       - name: Stop Docker stack
         if: always()

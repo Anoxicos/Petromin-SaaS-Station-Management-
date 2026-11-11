@@ -1,0 +1,33 @@
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: app target outage triggers an alert after one minute
+    interval: 1m
+    input_series:
+      - series: 'up{job="station-platform-app",instance="app:9464"}'
+        values: '0+0x3'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: StationPlatformMetricsTargetUnavailable
+        exp_alerts:
+          - exp_labels:
+              alertname: StationPlatformMetricsTargetUnavailable
+              instance: app:9464
+              job: station-platform-app
+              severity: warning
+            exp_annotations:
+              summary: Station platform metrics endpoint is unreachable
+              description: Prometheus cannot scrape the private station platform metrics endpoint.
+
+  - name: healthy app target does not trigger an alert
+    interval: 1m
+    input_series:
+      - series: 'up{job="station-platform-app",instance="app:9464"}'
+        values: '1+0x5'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: StationPlatformMetricsTargetUnavailable
+        exp_alerts: []

@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Station daily operations</title>
+  <link rel="stylesheet" href="/app/operations.css">
+  <script src="/app/read-excel-file.min.js" defer></script>
+  <script src="/app/import-parser.js" defer></script>
+  <script src="/app/operations.js" defer></script>
+  <script src="/app/french.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/app" aria-label="Station platform home"><span class="brand-mark">P</span><span>Station platform</span></a>
+    <nav class="top-links"><a id="platformAdminLink" class="quiet-link" href="/admin/platform" hidden>Platform admin</a><a id="signInLink" class="quiet-link" href="/login?returnTo=%2Fapp">Sign in</a><a id="signOutLink" class="quiet-link" href="/logout" hidden>Sign out</a></nav>
+  </header>
+  <main>
+    <section class="intro">
+      <p class="eyebrow">DAILY OPERATIONS</p>
+      <h1>Station day</h1>
+      <p>Enter meter readings and collections, review the day, then close it when the station’s cutoff has passed.</p>
+    </section>
+
+    <section class="context panel" aria-label="Station and date">
+      <label>Client<select id="clientSelect" disabled><option value="">Sign in to load clients</option></select></label>
+      <label>Station<select id="stationSelect" disabled><option value="">Choose a client first</option></select></label>
+      <label>Business date<input id="businessDate" type="date"></label>
+      <button class="button secondary" id="refreshButton" type="button">Refresh day</button>
+    </section>
+    <p id="notice" class="notice" role="status" aria-live="polite"></p>
+
+    <section id="invoicePrintPanel" class="panel" aria-label="Invoice printing" hidden>
+      <div class="section-heading"><div><p class="eyebrow">FINANCE</p><h2>Print an issued invoice</h2></div></div>
+      <p class="help">Enter an issued invoice ID. The print view uses the saved invoice snapshot; use your browser’s print dialog to save it as PDF.</p>
+      <div class="invoice-print-row"><label>Invoice ID<input id="invoiceIdToPrint" autocomplete="off" spellcheck="false" placeholder="Issued invoice ID"></label><button id="printInvoice" class="button secondary" type="button">Open print view</button></div>
+    </section>
+
+    <section id="financePanel" class="panel" hidden>
+      <div class="section-heading"><div><p class="eyebrow">M3 CREDIT AND INVOICING</p><h2>Customers and finance</h2></div><button id="refreshFinance" class="button secondary" type="button">Refresh finance</button></div>
+      <p class="help">Use client-approved prices and tax settings. The app does not supply VAT rules, payment terms, or legal invoice wording. A sale and its later payment are separate records.</p>
+      <details open>
+        <summary><strong>Customers and credit accounts</strong></summary>
+        <div class="totals-grid"><label>Customer code<input id="financeCustomerCode" maxlength="32"></label><label>Display name<input id="financeCustomerName" maxlength="200"></label><label>Email<input id="financeCustomerEmail" type="email" maxlength="254"></label><label>Phone<input id="financeCustomerPhone" maxlength="40"></label></div>
+        <button id="createFinanceCustomer" class="button secondary" type="button">Add customer</button>
+        <div class="totals-grid"><label>Customer<select id="creditCustomer"></select></label><label>Credit limit<input id="creditLimit" type="number" min="0" step="0.01"></label><label>Payment terms · days<input id="creditTermsDays" type="number" min="0" max="3650" step="1" placeholder="Leave unset if undecided"></label><label>Account status<select id="creditStatus"><option value="ACTIVE">Active</option><option value="ON_HOLD">On hold</option><option value="CLOSED">Closed</option></select></label></div>
+        <div id="creditAdminControls"><button id="saveCreditAccount" class="button secondary" type="button">Save credit account</button></div><div id="financeCustomerList" class="table-wrap"></div>
+      </details>
+      <details>
+        <summary><strong>Post a sale</strong></summary>
+        <p class="help">Fuel price fills from the effective station tariff at entry time; the server checks it again. Supply the tax code/rate only from the client's approved setup. Every tender must balance to the sale total.</p>
+        <div class="totals-grid"><label>Business date<input id="saleBusinessDate" type="date"></label><label>Currency code<input id="saleCurrency" maxlength="3" placeholder="Client currency"></label><label>Customer for credit sales<select id="saleCustomer"></select></label></div>
+        <div id="saleLineRows" class="entry-list"></div><button id="addSaleLine" class="button secondary" type="button">Add sale line</button>
+        <h3>Payment split</h3><div id="saleTenderRows" class="entry-list"></div><button id="addSaleTender" class="button secondary" type="button">Add tender</button>
+        <h3>Credit payment schedule (optional)</h3><p class="help">Add installments only when agreed with the customer. Amounts must equal the credit portion. With no custom schedule, configured account terms create one due date. No interest or late fee is added.</p><div id="saleScheduleRows" class="entry-list"></div><button id="addSaleScheduleInstallment" class="button secondary" type="button">Add installment</button>
+        <label id="creditOverrideWrap">Credit-limit override reason<input id="creditOverrideReason" maxlength="500" placeholder="Required only for an authorized override"></label>
+        <div id="saleTotalPreview" class="help" aria-live="polite"></div><button id="postFinanceSale" class="button" type="button">Post sale</button>
+      </details>
+      <details>
+        <summary><strong>Vouchers</strong></summary>
+        <div id="voucherAdminControls"><div class="totals-grid"><label>Code<input id="voucherCode" maxlength="80"></label><label>Face value<input id="voucherValue" type="number" min="0.01" step="0.01"></label><label>Currency<input id="voucherCurrency" maxlength="3" placeholder="Client currency"></label><label>Expiry (optional)<input id="voucherExpiry" type="datetime-local"></label></div><button id="issueVoucher" class="button secondary" type="button">Issue voucher</button></div>
+        <div id="voucherList" class="history"></div>
+      </details>
+      <details id="paymentControls">
+        <summary><strong>Record customer payment</strong></summary>
+        <p class="help">Record payment for an earlier credit sale; this does not create a new sale. Allocate only to the matching customer's outstanding credit sales.</p>
+        <div class="totals-grid"><label>Customer<select id="paymentCustomer"></select></label><label>Amount<input id="paymentAmount" type="number" min="0.01" step="0.01"></label><label>Currency<input id="paymentCurrency" maxlength="3" placeholder="Client currency"></label><label>Method<select id="paymentMethod"><option value="">Choose a method</option><option value="CASH">Cash</option><option value="CARD">Card</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CHEQUE">Cheque</option><option value="OTHER">Other</option></select></label><label>Reference<input id="paymentReference" maxlength="160"></label></div>
+        <div id="paymentAllocationRows" class="entry-list"></div><button id="addPaymentAllocation" class="button secondary" type="button">Add allocation</button><button id="recordFinancePayment" class="button" type="button">Record payment</button>
+      </details>
+      <details id="invoiceProfileControls">
+        <summary><strong>Invoice profile</strong></summary>
+        <p class="help">Enter wording and tax rules supplied by the client's accountant/legal adviser. Saving changes resets approval; only the client ACCOUNTANT role can approve.</p>
+        <div class="totals-grid"><label>Invoice number prefix<input id="invoicePrefix" maxlength="24" placeholder="Enter agreed prefix"></label><label>Credit-note number prefix<input id="creditPrefix" maxlength="24" placeholder="Enter agreed prefix"></label></div>
+        <label>Legal configuration JSON<textarea id="invoiceLegalConfiguration" rows="8" spellcheck="false" placeholder='{"issuerName":"","legalMentions":[],"taxRules":[]}'></textarea></label>
+        <div id="invoiceProfileSaveControls"><button id="saveInvoiceProfile" class="button secondary" type="button">Save draft profile</button></div>
+        <div id="invoiceApprovalControls"><div class="totals-grid"><label>Accountant approval statement<input id="invoiceApprovalStatement" maxlength="1000"></label><label>Approval reference (optional)<input id="invoiceApprovalReference" maxlength="250"></label></div><button id="approveInvoiceProfile" class="button secondary" type="button">Accountant: approve supplied profile</button></div>
+        <p id="invoiceProfileStatus" class="help"></p>
+      </details>
+      <details>
+        <summary><strong>Sales, invoices, and credit notes</strong></summary>
+        <div id="invoiceSalesControls"><div id="financeSalesList" class="history"></div>
+          <div class="totals-grid"><label>Issued invoice<select id="creditNoteInvoice"></select></label><label>Credit-note amount<input id="creditNoteAmount" type="number" min="0.01" step="0.01"></label><label>Receivable adjustment<input id="creditNoteReceivable" type="number" min="0" step="0.01" required></label></div>
+          <label>Credit-note reason<input id="creditNoteReason" maxlength="1000"></label><button id="issueCreditNote" class="button secondary" type="button">Issue credit note</button><div id="creditNoteList" class="history"></div>
+        </div>
+      </details>
+    </section>
+
+    <section id="inventoryPanel" class="panel" hidden>
+      <div class="section-heading"><div><p class="eyebrow">STOCK</p><h2>Inventory and dip variance</h2></div><button id="refreshInventory" class="button secondary" type="button">Refresh stock</button></div>
+      <p class="help">Fuel usage comes from validated meter readings. Dip stock is shown only when all station tanks have validated readings and supplied calibration charts. Variance is informational until operations sets a threshold.</p>
+      <div id="inventoryTable" class="table-wrap"></div>
+      <div id="stockManagementPanel" hidden>
+        <h3>Stock management</h3>
+        <p class="help">Owner and manager actions. Enter client-confirmed quantities, dates, currency, and reasons. Posted receipts and stock movements cannot be edited.</p>
+        <details><summary><strong>Fuel variance tolerances</strong></summary>
+          <p class="help">Set a maximum absolute stock-versus-dip variance per fuel product using that product’s unit. No threshold is assumed. Results are informational and never block closing.</p>
+          <div class="totals-grid"><label>Fuel product<select id="fuelVarianceProduct"></select></label><label>Maximum absolute variance<input id="fuelVarianceLimit" type="number" min="0" step="0.001" placeholder="Leave empty to clear"></label></div>
+          <label>Client-approved reason or reference<input id="fuelVarianceReason" maxlength="1000" placeholder="Required when setting or clearing a tolerance"></label>
+          <button id="saveFuelVariance" class="button secondary" type="button">Save tolerance</button><div id="fuelVariancePolicyList" class="history"></div>
+        </details>
+        <details><summary><strong>Suppliers</strong></summary>
+          <div class="totals-grid"><label>Supplier code<input id="supplierCode" maxlength="32"></label><label>Supplier name<input id="supplierName" maxlength="200"></label><label>Contact email (optional)<input id="supplierEmail" type="email" maxlength="254"></label><label>Phone (optional)<input id="supplierPhone" maxlength="40"></label></div>
+          <button id="createSupplier" class="button secondary" type="button">Add supplier</button><div id="supplierList" class="history"></div>
+        </details>
+        <details><summary><strong>Receive stock from supplier</strong></summary>
+          <div class="totals-grid"><label>Supplier<select id="receiptSupplier"></select></label><label>Business date<input id="receiptDate" type="date"></label><label>Currency code<input id="receiptCurrency" maxlength="3" placeholder="Enter agreed currency"></label><label>Supplier reference (optional)<input id="receiptReference" maxlength="120"></label></div>
+          <div id="receiptLineRows" class="entry-list"></div><button id="addReceiptLine" class="button secondary" type="button">Add receipt line</button>
+          <button id="postReceipt" class="button" type="button">Post receipt</button><div id="receiptHistory" class="history"></div>
+        </details>
+        <details><summary><strong>Record a stock adjustment or opening balance</strong></summary>
+          <div class="totals-grid"><label>Product<select id="adjustProduct"></select></label><label>Movement type<select id="adjustType"><option value="ADJUSTMENT">Adjustment</option><option value="OPENING_BALANCE">Opening balance</option></select></label><label>Business date<input id="adjustDate" type="date"></label><label>Signed quantity change<input id="adjustQuantity" type="number" step="0.001" placeholder="Positive or negative"></label></div>
+          <label>Reason<input id="adjustReason" maxlength="1000"></label><button id="saveStockAdjustment" class="button secondary" type="button">Record movement</button>
+        </details>
+        <details><summary><strong>Service component recipes</strong></summary>
+          <div class="totals-grid"><label>Service<select id="serviceProduct"></select></label><label>Component article<select id="serviceComponentProduct"></select></label><label>Quantity per service<input id="serviceComponentQuantity" type="number" min="0.001" step="0.001"></label></div>
+          <button id="addServiceComponent" class="button secondary" type="button">Add component</button><div id="serviceRecipeRows" class="history"></div><button id="saveServiceRecipe" class="button" type="button">Save recipe</button>
+        </details>
+        <details><summary><strong>Stock movement history</strong></summary><div id="stockMovementHistory" class="history"></div></details>
+      </div>
+    </section>
+
+    <section id="reportPanel" class="panel" hidden>
+      <div class="section-heading"><div><p class="eyebrow">REPORTS</p><h2>Client daily overview</h2></div></div>
+      <p class="help">View station activity together for the selected client. Exports include only stations and records available to your account.</p>
+      <p class="help">Sales totals include posted app transactions by currency; cash/card inputs are reported separately and are not added to sales. Open credit shows the current balance of posted sales through the selected date, so later payments and credit notes are reflected. Imported opening balances without a station sale are not attributed to a station.</p>
+      <div class="report-actions"><label>Report date<input id="reportDate" type="date"></label><button id="loadClientReport" class="button secondary" type="button">View overview</button><button id="exportDailyXlsx" class="button secondary" type="button">Download Excel workbook</button><button id="printDailyPdf" class="button secondary" type="button">Print or save PDF</button></div>
+      <div id="dailyReportTable" class="table-wrap"></div>
+      <div id="accountingExportControls" class="report-actions" hidden>
+        <label>From<input id="accountingFrom" type="date"></label><label>To<input id="accountingTo" type="date"></label><button id="exportAccountingXlsx" class="button secondary" type="button">Download accounting workbook</button>
+      </div>
+    </section>
+
+    <section id="importPanel" class="panel" hidden>
+      <div class="section-heading"><div><p class="eyebrow">DATA SETUP</p><h2>History and opening balances</h2></div><button id="refreshImports" class="button secondary" type="button">Refresh imports</button></div>
+      <p class="help">Upload an Excel-compatible CSV, review row validation, then explicitly commit. Imported history is an archive; it does not create invoices or sales. Opening balances append ledger entries. Paper records can be digitised into the same template. There is no configured historical date cap yet.</p>
+      <div class="totals-grid"><label>Import type<select id="importKind"><option value="HISTORICAL_RECORDS">Historical records archive</option><option value="OPENING_STOCK">Opening stock balance</option><option value="OPENING_RECEIVABLE">Opening customer receivable</option></select></label><label>Station (required for opening balances)<select id="importStation"><option value="">No station / client history</option></select></label></div>
+      <p class="help">Download the CSV template, open it in Excel, then save as CSV or XLSX. XLSX import reads the first worksheet. Paper history must be digitised into these columns; compare the preview with source records before committing.</p>
+      <div class="report-actions"><label>CSV or Excel workbook<input id="importFile" type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"></label><button id="downloadImportTemplate" class="button secondary" type="button">Download template</button><button id="stageImport" class="button" type="button">Upload and stage</button></div>
+      <div class="report-actions"><label>Import job<select id="importJobSelect"><option value="">Choose a staged import</option></select></label><button id="validateImport" class="button secondary" type="button">Validate and preview</button><button id="commitImport" class="button" type="button" disabled>Commit valid import</button></div>
+      <p id="importStatus" class="help" role="status"></p><div id="importPreview" class="table-wrap"></div>
+      <h3>Browse committed historical records</h3>
+      <p class="help">Search the immutable archive by date, station, or record type. Results are paged; download the visible page as CSV.</p>
+      <div class="totals-grid"><label>From date<input id="historyFrom" type="date"></label><label>To date<input id="historyTo" type="date"></label><label>Station<select id="historyStation"><option value="">All stations</option></select></label><label>Record type<input id="historyRecordType" maxlength="80" placeholder="Optional exact type"></label></div>
+      <div class="report-actions"><button id="searchHistory" class="button secondary" type="button">Search archive</button><button id="exportHistoryPage" class="button secondary" type="button" disabled>Download this page as CSV</button><button id="loadOlderHistory" class="button secondary" type="button" disabled>Load older records</button></div>
+      <p id="historyStatus" class="help" role="status"></p><div id="historyResults" class="table-wrap"></div>
+    </section>
+
+    <section id="onboardingPanel" class="panel" hidden>
+      <div class="section-heading"><div><p class="eyebrow">CLIENT SETUP</p><h2>Onboarding checklist</h2></div><span id="onboardingReadiness" class="status">In progress</span></div>
+      <p class="help">Each item is assigned to a client role or the provider. Record a short note when the responsible person completes it. Unconfirmed legal, tax, retention, support, and operating rules stay open.</p>
+      <div id="clientOnboardingTasks" class="history"></div>
+    </section>
+
+    <section id="clientSupportPanel" class="panel" hidden>
+      <div class="section-heading"><div><p class="eyebrow">HELP</p><h2>Support requests</h2></div><button id="refreshSupport" class="button secondary" type="button">Refresh</button></div>
+      <p class="help">Describe the issue without passwords, access tokens, or payment-card data. Response targets are not yet agreed.</p>
+      <div class="totals-grid"><label>Category<select id="supportCategory"><option value="OPERATIONS">Station operations</option><option value="ACCESS">Account access</option><option value="DATA_ISSUE">Data issue</option><option value="OTHER">Other</option></select></label><label>Subject<input id="supportSubject" maxlength="160"></label></div>
+      <label>Description<textarea id="supportDescription" maxlength="5000" rows="4"></textarea></label><button id="createSupportRequest" class="button" type="button">Submit request</button>
+      <div id="clientSupportRequests" class="history"></div>
+      <div id="clientSupportConversation" class="history"></div><div id="clientSupportReply" hidden><label>Reply<textarea id="supportReply" maxlength="5000" rows="3"></textarea></label><button id="sendSupportReply" class="button secondary" type="button">Send reply</button></div>
+    </section>
+
+    <section id="settingsPanel" class="panel settings-panel" hidden>
+      <div class="section-heading"><div><p class="eyebrow">STATION SETUP</p><h2>Business-day boundary</h2></div><span id="settingsStatus" class="status">Owner or manager</span></div>
+      <p class="help">The cutoff defines which night readings belong to this station day. Choose the rule agreed with station operations. The app does not assume one for you.</p>
+      <div class="totals-grid"><label>Cutoff time<input id="settingCutoff" type="time"></label><label>Time zone<input id="settingTimeZone" placeholder="Africa/Casablanca" autocomplete="off"></label></div>
+      <div class="totals-grid"><label>Meter entry mode<select id="settingMeterMode"><option value="NOZZLE">Nozzle meters</option><option value="PUMP_TOTALIZER">Pump or totalizer</option></select></label><label>Day boundary rule<select id="settingDayRule"><option value="">Choose after confirming with operations</option><option value="CUTOFF_ENDS_DAY">Cutoff ends the selected business date</option><option value="CUTOFF_STARTS_DAY">Cutoff starts the selected business date</option></select></label></div>
+      <div class="actions"><button class="button secondary" id="saveSettings" type="button">Save station setup</button></div>
+    </section>
+
+    <section id="catalogPanel" class="panel" hidden>
+      <div class="section-heading"><div><p class="eyebrow">METER AND PRODUCT SETUP</p><h2>Station configuration</h2></div><button id="refreshStationSetup" class="button secondary" type="button">Refresh setup</button></div>
+      <p class="help">Owner or manager setup. Enter products, prices, equipment, and calibration data from client records. Tariff and calibration history is retained; do not create placeholder values for live operations.</p>
+      <details open><summary><strong>Products and station assignment</strong></summary>
+        <div class="totals-grid"><label>Code<input id="setupProductCode" maxlength="32"></label><label>Name<input id="setupProductName" maxlength="200"></label><label>Type<select id="setupProductType"><option value="FUEL">Fuel</option><option value="ARTICLE">Article</option><option value="SERVICE">Service</option></select></label><label>Unit code<input id="setupProductUnit" maxlength="16" value="L"></label></div>
+        <button id="createSetupProduct" class="button secondary" type="button">Create client product</button>
+        <div class="totals-grid"><label>Assign product to this station<select id="assignProduct"></select></label><button id="assignSetupProduct" class="button secondary" type="button">Assign product</button></div><div id="setupProductList" class="table-wrap"></div>
+      </details>
+      <details><summary><strong>Fuel tariffs</strong></summary>
+        <p class="help">Enter an ISO timestamp with offset, for example YYYY-MM-DDTHH:mm:ss+01:00. Changes are effective-dated and audited.</p>
+        <div class="totals-grid"><label>Assigned fuel product<select id="tariffProduct"></select></label><label>Unit price<input id="setupTariffPrice" type="number" min="0" step="0.0001"></label><label>Effective from (ISO timestamp with offset)<input id="setupTariffFrom" maxlength="40" placeholder="YYYY-MM-DDTHH:mm:ss+01:00"></label></div><button id="createSetupTariff" class="button secondary" type="button">Add tariff</button><div id="setupTariffList" class="history"></div>
+      </details>
+      <details><summary><strong>Pumps, meters, nozzles, and tanks</strong></summary>
+        <div class="totals-grid"><label>Equipment code<input id="setupEquipmentCode" maxlength="40"></label><label>Kind<select id="setupEquipmentKind"><option value="PUMP">Pump</option><option value="METER">Meter / totalizer</option><option value="NOZZLE">Nozzle</option><option value="TANK">Tank</option></select></label><label>Serial number<input id="setupEquipmentSerial" maxlength="120"></label><label id="setupEquipmentProductWrap">Fuel product<select id="setupEquipmentProduct"></select></label><label id="setupEquipmentParentWrap">Parent pump<select id="setupEquipmentParent"></select></label></div>
+        <button id="createSetupEquipment" class="button secondary" type="button">Add equipment</button><div id="setupEquipmentList" class="table-wrap"></div>
+      </details>
+      <details><summary><strong>Nozzle-to-tank assignments</strong></summary>
+        <p class="help">Assignments are versioned; a later assignment records when the previous one ended.</p>
+        <div class="totals-grid"><label>Nozzle<select id="setupAssignmentNozzle"></select></label><label>Tank<select id="setupAssignmentTank"></select></label><label>Effective from (ISO timestamp with offset)<input id="setupAssignmentFrom" maxlength="40" placeholder="YYYY-MM-DDTHH:mm:ss+01:00"></label></div><button id="saveTankAssignment" class="button secondary" type="button">Record assignment</button><div id="setupAssignmentHistory" class="history"></div>
+      </details>
+      <details><summary><strong>Tank calibration charts</strong></summary>
+        <p class="help">Copy the supplied chart points exactly. Use one depth and volume per line, separated by a comma. Drafts must be activated before they affect dip conversion.</p>
+        <div class="totals-grid"><label>Tank<select id="calibrationTank"></select></label><label>Effective from<input id="calibrationDate" type="date"></label></div><label>Depth mm, volume litres<textarea id="calibrationPoints" rows="5" placeholder="0,0&#10;1000,5000"></textarea></label><button id="createCalibration" class="button secondary" type="button">Save chart draft</button><div id="calibrationHistory" class="history"></div>
+      </details>
+      <details><summary><strong>Meter replacement or reset</strong></summary>
+        <p class="help">Record a replacement/reset only against the verified meter index. The reset date and starting index must match the affected reading batch.</p>
+        <div class="totals-grid"><label>Meter or nozzle<select id="resetEquipment"></select></label><label>Business date<input id="resetDate" type="date"></label><label>Previous index<input id="resetPreviousIndex" inputmode="decimal"></label><label>New initial index<input id="resetNewIndex" inputmode="decimal"></label><label>New serial number (optional)<input id="resetNewSerial" maxlength="120"></label></div><label>Reason<input id="resetReason" maxlength="1000"></label><button id="recordMeterReset" class="button secondary" type="button">Record reset</button><div id="meterResetHistory" class="history"></div>
+      </details>
+    </section>
+
+    <section id="dayPanel" hidden>
+      <div class="summary-grid" id="summary"></div>
+      <nav class="day-steps" aria-label="Station-day steps">
+        <a href="#meterReadings"><span>1</span> Meter readings</a>
+        <a href="#cashAndDips"><span>2</span> Cash, card and tank dips</a>
+        <a href="#cashReconciliation"><span>3</span> Reconciliation</a>
+        <a href="#reviewAndClose"><span>4</span> Review and close</a>
+      </nav>
+
+      <section class="panel workflow" id="meterReadings">
+        <div class="section-heading"><div><p class="eyebrow">STEP 1</p><h2>Meter readings</h2></div><span id="meterStatus" class="status">Not entered</span></div>
+        <p class="help" id="meterHelp"></p>
+        <div id="meterRows" class="entry-list"></div>
+        <div class="actions"><button class="button" id="saveReadings" type="button">Save readings</button><button class="button secondary" id="validateReadings" type="button" hidden>Validate readings</button></div>
+      </section>
+
+      <section class="panel workflow" id="cashAndDips">
+        <div class="section-heading"><div><p class="eyebrow">STEP 2</p><h2>Cash, card and tank dips</h2></div><span id="inputsStatus" class="status">Not entered</span></div>
+        <div class="totals-grid"><label>Cash collected<input id="cashTotal" inputmode="decimal" type="number" min="0" step="0.01" placeholder="0.00"></label><label>Card collected<input id="cardTotal" inputmode="decimal" type="number" min="0" step="0.01" placeholder="0.00"></label><label>Currency code<input id="collectionsCurrency" maxlength="3" autocomplete="off" placeholder="Three-letter code"></label></div><p class="help">Enter the currency for both totals. The app does not choose one automatically; reconciliation must use this same code.</p>
+        <h3>Tank readings</h3><p class="help">Enter measured depth in millimetres. The app converts it only when a real calibration chart is on file.</p>
+        <div id="tankRows" class="entry-list"></div>
+        <div class="actions"><button class="button" id="saveInputs" type="button">Save day inputs</button><button class="button secondary" id="validateInputs" type="button" hidden>Validate day inputs</button></div>
+      </section>
+
+      <section class="panel workflow" id="cashReconciliation">
+        <div class="section-heading"><div><p class="eyebrow">STEP 3</p><h2>Cash and card reconciliation</h2></div><span id="reconStatus" class="status">Optional</span></div>
+        <p class="help">Compare the reported amounts with the till count and card settlement. Variances are recorded for review and do not block closing by default.</p>
+        <div id="financialVarianceAdminControls" class="panel settings-panel" hidden><h3>Optional variance tolerances</h3><p class="help">Set only client-approved limits. Values use the currency entered for each reconciliation; blank limits are not evaluated. Tolerances never block closing.</p><div class="totals-grid"><label>Currency code<input id="financialVarianceCurrency" maxlength="3" placeholder="Three-letter code"></label><label>Maximum cash variance<input id="cashVarianceLimit" type="number" min="0" step="0.01" placeholder="Leave empty for no limit"></label><label>Maximum card variance<input id="cardVarianceLimit" type="number" min="0" step="0.01" placeholder="Leave empty for no limit"></label></div><label>Approved reason or reference<input id="financialVarianceReason" maxlength="1000"></label><button class="button secondary" id="saveFinancialVariance" type="button">Save tolerances</button></div>
+        <div class="totals-grid"><label>Reconciliation currency<input id="reconCurrency" maxlength="3" placeholder="Three-letter code"></label><label>Counted cash<input id="countedCash" inputmode="decimal" type="number" min="0" step="0.01" placeholder="0.00"></label><label>Card settlement<input id="settledCard" inputmode="decimal" type="number" min="0" step="0.01" placeholder="0.00"></label></div>
+        <div class="totals-grid"><label>Settlement reference<input id="settlementRef" maxlength="120" placeholder="Optional batch or slip number"></label><label>Note<input id="reconReason" maxlength="1000" placeholder="Reason or recount note"></label></div>
+        <div class="actions"><button class="button secondary" id="saveRecon" type="button">Record reconciliation</button></div>
+        <div id="reconHistory" class="history"></div>
+      </section>
+
+      <section class="panel closing-panel" id="reviewAndClose">
+        <div class="section-heading"><div><p class="eyebrow">STEP 4</p><h2>Review and close</h2></div><span id="closeStatus" class="status">Not ready</span></div>
+        <div id="dayReview" class="review"></div>
+        <button class="button close-button" id="closeDay" type="button" disabled>Close station day</button>
+        <p class="help">Closing creates an immutable operational snapshot. Later corrections are recorded as separate audited adjustments. This does not issue invoices or reconcile fuel stock.</p>
+      </section>
+    </section>
+    <footer>Need access? Ask your station owner to add you to the correct client or station.</footer>
+  </main>
+</body>
+</html>

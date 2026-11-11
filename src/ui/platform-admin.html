@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Platform administration</title>
+  <link rel="stylesheet" href="/app/operations.css">
+  <script src="/admin/platform.js" defer></script>
+  <script src="/app/french.js" defer></script>
+</head>
+<body>
+  <header class="topbar"><a class="brand" href="/app"><span class="brand-mark">P</span><span>Station platform</span></a><nav class="top-links"><a id="adminSignIn" class="quiet-link" href="/login?returnTo=%2Fadmin%2Fplatform" hidden>Sign in</a><a id="adminSignOut" class="quiet-link" href="/logout">Sign out</a></nav></header>
+  <main>
+    <section class="intro"><p class="eyebrow">PROVIDER WORKSPACE</p><h1>Platform administration</h1><p>Onboard clients with station-specific settings, manage configurable subscription rates, and inspect platform-level status.</p><a href="/app">Return to station operations</a></section>
+    <p id="adminNotice" class="notice" role="status" aria-live="polite"></p>
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">OPERATIONS</p><h2>Client overview</h2></div><button id="refreshOverview" class="button secondary" type="button">Refresh</button></div>
+      <div id="clientOverview" class="table-wrap"></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">REPEATABLE SETUP</p><h2>Onboard a client</h2></div></div>
+      <div class="onboarding-guide" role="note">
+        <strong>Before you start</strong>
+        <ol>
+          <li>Ask the station owner to create or activate their account using your organization’s Auth0 process.</li>
+          <li>Have the owner sign in to the <a href="/login?returnTo=%2Fapp" target="_blank" rel="noopener">station app in a new tab</a> at least once.</li>
+          <li>Return here and enter the same email address. This form links the existing account; it does not create an Auth0 login.</li>
+        </ol>
+        <p class="help">For each station, use confirmed operating details for meter mode, cutoff time, and IANA time zone. Leave the business-day rule pending until operations confirms it.</p>
+      </div>
+      <div class="totals-grid"><label>Client name<input id="clientName" maxlength="200" required></label><label>Client code<input id="clientCode" maxlength="32" required></label><label>Existing owner email<input id="ownerEmail" type="email" maxlength="320" required></label></div>
+      <div class="section-heading"><div><h3>Stations</h3></div><button id="addStation" class="button secondary" type="button">Add station</button></div>
+      <div id="onboardingStations" class="entry-list"></div>
+      <button id="onboardClient" class="button" type="button">Create client and stations</button>
+      <div class="section-heading"><div><h3>Onboarding checklist</h3></div></div>
+      <div class="report-actions"><label>Client<select id="onboardingClient"></select></label><button id="loadOnboardingChecklist" class="button secondary" type="button">Load checklist</button></div>
+      <div id="onboardingChecklist"></div>
+      <div class="section-heading"><div><h3>Recent client audit events</h3></div><button id="loadClientAudit" class="button secondary" type="button">Refresh history</button></div>
+      <div id="clientAuditTable" class="table-wrap"></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">COMMERCIAL SETUP</p><h2>Subscription plans</h2></div></div>
+      <p class="help">Rates are entered explicitly and take effect on a date you choose. No tax, legal invoice wording, or recurring charge is generated here. Activate a client subscription only after a real contract reference is available.</p>
+      <div class="totals-grid"><label>Plan code<input id="planCode" maxlength="32"></label><label>Plan name<input id="planName" maxlength="160"></label><label>Description<input id="planDescription" maxlength="2000"></label></div>
+      <button id="createPlan" class="button secondary" type="button">Create plan</button>
+      <div class="totals-grid"><label>Plan<select id="ratePlan"></select></label><label>Rate effective date<input id="rateDate" type="date"></label><label>Currency<input id="rateCurrency" maxlength="3" placeholder="Agreed ISO currency"></label><label>Monthly base fee<input id="baseFee" type="number" min="0" step="0.01"></label><label>Monthly fee per station<input id="stationFee" type="number" min="0" step="0.01"></label></div>
+      <button id="saveRate" class="button secondary" type="button">Save rate</button>
+      <div id="planTable" class="table-wrap"></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">PROVIDER SUPPORT</p><h2>Support inbox</h2></div><button id="refreshSupportInbox" class="button secondary" type="button">Refresh</button></div>
+      <p class="help">Manage requests and distinguish client-visible replies from internal provider notes. Do not promise response targets until support terms are agreed.</p>
+      <div id="supportInbox" class="history"></div><div id="supportDetail" class="history"></div>
+      <div id="supportControls" hidden>
+        <div class="totals-grid"><label>Status<select id="supportStatus"><option>NEW</option><option>ACKNOWLEDGED</option><option>IN_PROGRESS</option><option>WAITING_FOR_CLIENT</option><option>RESOLVED</option><option>CLOSED</option></select></label><label>Provider assignee<select id="supportAssignee"><option value="">Unassigned</option></select></label></div>
+        <label>Resolution note (required to resolve or close)<input id="supportResolution" maxlength="1000"></label><button id="saveSupportStatus" class="button secondary" type="button">Save status</button>
+        <div class="totals-grid"><label>Reply type<select id="supportVisibility"><option value="CLIENT">Client-visible reply</option><option value="PROVIDER">Internal provider note</option></select></label><label>Message<textarea id="supportMessage" rows="3" maxlength="5000"></textarea></label></div>
+        <button id="sendSupportMessage" class="button" type="button">Add message</button>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><p class="eyebrow">CLIENT TERMS</p><h2>Subscriptions</h2></div></div>
+      <div class="totals-grid"><label>Client<select id="subscriptionClient"></select></label><label>Plan<select id="subscriptionPlan"></select></label><label>Effective date<input id="subscriptionDate" type="date"></label><label>Billing time zone<input id="billingTimeZone" placeholder="Enter agreed IANA time zone" maxlength="80"></label><label>Billing day<input id="billingDay" type="number" min="1" max="31" placeholder="1–31 per contract"></label><label>Contract reference (optional while pending)<input id="contractReference" maxlength="240"></label></div>
+      <button id="createSubscription" class="button secondary" type="button">Create pending subscription</button>
+      <div id="subscriptionTable" class="table-wrap"></div>
+      <div id="subscriptionActions"></div>
+      <div class="section-heading"><div><h3>Monthly pre-tax statement</h3></div></div>
+      <p class="help">Only contract-backed active subscriptions can produce a draft. Select a full calendar month. No tax, payment, or legal invoice is created.</p>
+      <div class="totals-grid"><label>Active subscription<select id="billingSubscription"></select></label><label>Month<input id="billingMonth" type="month"></label></div>
+      <button id="createBillingStatement" class="button secondary" type="button">Create draft statement</button>
+      <div id="billingTable" class="table-wrap"></div>
+    </section>
+    <footer>Platform administration requires the configured super-admin account. Client contracts, pricing approval, legal billing requirements, and support terms remain subject to agreement.</footer>
+  </main>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Principal, Role } from "../domain/authorization.js";
+import { auth0AccessToken } from "./auth0-login.js";
 import { pool } from "./db.js";
 
 const issuer = process.env.AUTH_ISSUER;
@@ -25,13 +26,18 @@ export async function resolvePrincipal(request: IncomingMessage): Promise<Princi
     throw new IdentityError(503, "Authentication is not configured");
   }
 
-  const authorization = request.headers.authorization;
-  const match = authorization?.match(/^Bearer\s+(.+)$/i);
-  if (!match) throw new IdentityError(401, "Bearer token required");
+  const token = auth0AccessToken(request);
+  if (!token) throw new IdentityError(401, "Bearer token or Auth0 session required");
+  if (request.headers.cookie?.includes("station_access_token=")
+    && !["GET", "HEAD", "OPTIONS"].includes(request.method ?? "GET")) {
+    const origin = request.headers.origin;
+    const expectedOrigin = new URL(process.env.AUTH0_CALLBACK_URL ?? "http://localhost:3000/auth/callback").origin;
+    if (!origin || origin !== expectedOrigin) throw new IdentityError(403, "Invalid request origin");
+  }
 
   let subject: string;
   try {
-    const { payload } = await jwtVerify(match[1], remoteKeys, {
+    const { payload } = await jwtVerify(token, remoteKeys, {
       issuer,
       audience,
       algorithms: ["RS256", "ES256", "EdDSA"],

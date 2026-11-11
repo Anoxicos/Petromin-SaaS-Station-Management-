@@ -48,13 +48,36 @@ services:
       PGUSER: station_admin
       PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      RPO_TARGET_SECONDS: ${RPO_TARGET_SECONDS:-}
+      RTO_TARGET_SECONDS: ${RTO_TARGET_SECONDS:-}
+      OFFSITE_RESTIC_REPOSITORY: ${OFFSITE_RESTIC_REPOSITORY:-}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      OFFSITE_KEEP_LAST: ${OFFSITE_KEEP_LAST:-}
+      OFFSITE_KEEP_DAILY: ${OFFSITE_KEEP_DAILY:-}
+      OFFSITE_KEEP_WEEKLY: ${OFFSITE_KEEP_WEEKLY:-}
+      OFFSITE_KEEP_MONTHLY: ${OFFSITE_KEEP_MONTHLY:-}
+      OFFSITE_KEEP_YEARLY: ${OFFSITE_KEEP_YEARLY:-}
     volumes:
       - station_backups:/backups
       - ./db/scripts/backup-loop.sh:/scripts/backup-loop.sh:ro
+      - ./db/scripts/restore-offsite.sh:/scripts/restore-offsite.sh:ro
       - ./db/scripts/restore-latest.sh:/scripts/restore-latest.sh:ro
+      - ./db/scripts/recovery-targets.sh:/scripts/recovery-targets.sh:ro
+      - ./db/scripts/recovery-targets-test.sh:/scripts/recovery-targets-test.sh:ro
+      - ./db/scripts/backup-healthcheck.sh:/scripts/backup-healthcheck.sh:ro
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/scripts/backup-healthcheck.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
   app:
@@ -69,11 +92,18 @@ services:
       AUTH_ISSUER: ${AUTH_ISSUER:-}
       AUTH_AUDIENCE: ${AUTH_AUDIENCE:-}
       AUTH_JWKS_URL: ${AUTH_JWKS_URL:-}
+      AUTH0_CLIENT_ID: ${AUTH0_CLIENT_ID:-}
+      AUTH0_CLIENT_SECRET: ${AUTH0_CLIENT_SECRET:-}
+      AUTH0_CALLBACK_URL: ${AUTH0_CALLBACK_URL:-http://localhost:3000/auth/callback}
       PORT: 3000
+      METRICS_PORT: 9464
+    expose:
+      - "9464"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
       - ./src:/app/src
+      - ./scripts:/app/scripts:ro
       - ./package.json:/app/package.json:ro
       - ./package-lock.json:/app/package-lock.json:ro
       - ./tsconfig.json:/app/tsconfig.json:ro
@@ -81,9 +111,40 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.listen-address=0.0.0.0:9090
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./monitoring/alerts-test.yml:/etc/prometheus/alerts-test.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
 
 volumes:
   postgres_data:
   station_backups:
   app_node_modules:
+  prometheus_data:

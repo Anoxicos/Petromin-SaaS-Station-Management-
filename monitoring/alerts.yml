@@ -1,0 +1,11 @@
+groups:
+  - name: station-platform-availability
+    rules:
+      - alert: StationPlatformMetricsTargetUnavailable
+        expr: up{job="station-platform-app"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Station platform metrics endpoint is unreachable
+          description: Prometheus cannot scrape the private station platform metrics endpoint.

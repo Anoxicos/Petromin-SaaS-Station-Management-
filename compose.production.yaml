@@ -1,0 +1,172 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: station_platform
+      POSTGRES_USER: station_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      STATION_APP_PASSWORD: ${STATION_APP_PASSWORD:?Set a separate STATION_APP_PASSWORD in .env.production}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init/000_create_app_role.sh:/docker-entrypoint-initdb.d/000_create_app_role.sh:ro
+      - ./db/scripts/bootstrap_super_admin.sql:/scripts/bootstrap_super_admin.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U station_admin -d station_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  migrate:
+    image: postgres:16-alpine
+    command: ["/bin/sh", "/scripts/migrate.sh"]
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: station_platform
+      PGUSER: station_admin
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+    volumes:
+      - ./db/scripts/migrate.sh:/scripts/migrate.sh:ro
+      - ./db/migrations:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    environment:
+      NODE_ENV: production
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: station_platform
+      PGUSER: station_app
+      PGPASSWORD: ${STATION_APP_PASSWORD:?Set STATION_APP_PASSWORD in .env.production}
+      AUTH_ISSUER: ${AUTH_ISSUER:?Set AUTH_ISSUER in .env.production}
+      AUTH_AUDIENCE: ${AUTH_AUDIENCE:?Set AUTH_AUDIENCE in .env.production}
+      AUTH_JWKS_URL: ${AUTH_JWKS_URL:?Set AUTH_JWKS_URL in .env.production}
+      AUTH0_CLIENT_ID: ${AUTH0_CLIENT_ID:?Set AUTH0_CLIENT_ID in .env.production}
+      AUTH0_CLIENT_SECRET: ${AUTH0_CLIENT_SECRET:?Set AUTH0_CLIENT_SECRET in .env.production}
+      AUTH0_CALLBACK_URL: ${AUTH0_CALLBACK_URL:?Set AUTH0_CALLBACK_URL in .env.production}
+      PORT: 3000
+      METRICS_PORT: 9464
+    expose:
+      - "3000"
+      - "9464"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  backup:
+    build:
+      context: .
+      dockerfile: db/Dockerfile.backup
+    command: ["/bin/sh", "/scripts/backup-loop.sh"]
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: station_platform
+      PGUSER: station_admin
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.production}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      RPO_TARGET_SECONDS: ${RPO_TARGET_SECONDS:-}
+      RTO_TARGET_SECONDS: ${RTO_TARGET_SECONDS:-}
+      OFFSITE_RESTIC_REPOSITORY: ${OFFSITE_RESTIC_REPOSITORY:-}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      OFFSITE_KEEP_LAST: ${OFFSITE_KEEP_LAST:-}
+      OFFSITE_KEEP_DAILY: ${OFFSITE_KEEP_DAILY:-}
+      OFFSITE_KEEP_WEEKLY: ${OFFSITE_KEEP_WEEKLY:-}
+      OFFSITE_KEEP_MONTHLY: ${OFFSITE_KEEP_MONTHLY:-}
+      OFFSITE_KEEP_YEARLY: ${OFFSITE_KEEP_YEARLY:-}
+    volumes:
+      - station_backups:/backups
+      - ./db/scripts/backup-loop.sh:/scripts/backup-loop.sh:ro
+      - ./db/scripts/restore-offsite.sh:/scripts/restore-offsite.sh:ro
+      - ./db/scripts/restore-latest.sh:/scripts/restore-latest.sh:ro
+      - ./db/scripts/recovery-targets.sh:/scripts/recovery-targets.sh:ro
+      - ./db/scripts/backup-healthcheck.sh:/scripts/backup-healthcheck.sh:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/scripts/backup-healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  proxy:
+    image: caddy:2-alpine
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.listen-address=0.0.0.0:9090
+    expose:
+      - "9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./monitoring/alerts-test.yml:/etc/prometheus/alerts-test.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  station_backups:
+  caddy_data:
+  caddy_config:
+  prometheus_data:
